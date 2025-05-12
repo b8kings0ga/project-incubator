@@ -1,0 +1,140 @@
+#cloud-config
+
+# Update and upgrade the system
+package_update: true
+package_upgrade: true
+
+# Install prerequisites
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+
+# Docker installation and configuration
+runcmd:
+  # Create required directories
+  - mkdir -p /etc/apt/keyrings
+  
+  # Add Docker's official GPG key using the recommended method
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - chmod a+r /etc/apt/keyrings/docker.gpg
+  
+  # Set up Docker repository with fallback for newer Ubuntu versions
+  - |
+    UBUNTU_CODENAME=$(lsb_release -cs)
+    echo "Setting up Docker repository for Ubuntu $UBUNTU_CODENAME"
+    if ! curl -s https://download.docker.com/linux/ubuntu/dists/$UBUNTU_CODENAME/Release &> /dev/null; then
+      echo "Docker repository not available for $UBUNTU_CODENAME, using the latest supported version"
+      # Use the latest known supported version if the current one is not available
+      UBUNTU_CODENAME="jammy"
+    fi
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $UBUNTU_CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  
+  # Install Docker Engine with error handling
+  - apt-get update || (sleep 3 && apt-get update)
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || (apt-get update --fix-missing && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
+  
+  # Start and enable Docker service
+  - systemctl start docker || (sleep 2 && systemctl start docker)
+  - systemctl enable docker
+  
+  # Add the default user (ubuntu) to the docker group
+  - usermod -aG docker ubuntu
+  
+  # Verify Docker installation
+  - docker --version || echo "Docker installation may have issues"
+  
+  # Install EdgeVPN
+  - |
+    echo "Installing EdgeVPN..."
+    # Download and install EdgeVPN
+    curl -L -o edgevpn.tar.gz https://github.com/mudler/edgevpn/releases/download/v0.30.2/edgevpn-v0.30.2-Linux-arm64.tar.gz
+    tar -xzf edgevpn.tar.gz -C /usr/local/bin
+    chmod +x /usr/local/bin/edgevpn
+    rm edgevpn.tar.gz
+    
+    # Create EdgeVPN config directory
+    mkdir -p /etc/edgevpn
+    
+    # Copy EdgeVPN configuration
+    cat > /etc/edgevpn/config.yaml << 'EOF'
+    otp:
+      dht:
+        interval: 360
+        key: 4EKOSf8HhIAtZiLYzGGV5kcVV3krkg2eUomGsq5CoIB
+        length: 43
+      crypto:
+        interval: 360
+        key: BTIZyuwpeKCvmFwLyxoWQGEgixisLQjPWx7w0gjtF0Y
+        length: 43
+    room: JwyJM45cWVXpxEI3XHUBj5xNA2oy4YgG1J52VaATBgq
+    rendezvous: mfXxAfF9xhInhuQAC6yNVN6KIyd766PIPdZtQTUhf9w
+    mdns: C9uGAJdpjjqy20ZcXUvplXf7C1tKozyhDyNIT6b9SXk
+    max_message_size: 20971520
+    EOF
+    
+    # Create EdgeVPN systemd service
+    cat > /etc/systemd/system/edgevpn.service << 'EOF'
+    [Unit]
+    Description=EdgeVPN Service
+    After=network.target
+    
+    [Service]
+    Type=simple
+    Environment="EDGEVPNCONFIG=/etc/edgevpn/config.yaml"
+    ExecStart=/usr/local/bin/edgevpn --config /etc/edgevpn/config.yaml --api
+    Restart=always
+    RestartSec=5
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+    
+    # Enable and start EdgeVPN service
+    systemctl daemon-reload
+    systemctl enable edgevpn
+    systemctl start edgevpn
+    
+  # Install Nomad
+  - |
+    echo "Installing Nomad..."
+    # Add HashiCorp GPG key
+    curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add -
+    
+    # Add HashiCorp repository
+    apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+    
+    # Update and install Nomad
+    apt-get update
+    apt-get install -y nomad
+    
+    # Create basic Nomad configuration
+    mkdir -p /etc/nomad.d
+    cat > /etc/nomad.d/nomad.hcl << 'EOF'
+    data_dir = "/opt/nomad/data"
+    bind_addr = "0.0.0.0"
+    
+    server {
+      enabled = true
+      bootstrap_expect = 1
+    }
+    
+    client {
+      enabled = true
+      
+      # Use edgevpn0 network interface
+      network_interface = "edgevpn0"
+    }
+    EOF
+    
+    # Create required directories
+    mkdir -p /opt/nomad/data
+    
+    # Enable and start Nomad service
+    systemctl enable nomad
+    systemctl start nomad
+
+# Final message on completion
+final_message: "The system is finally up, after $UPTIME seconds"
