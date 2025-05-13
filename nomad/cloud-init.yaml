@@ -84,7 +84,7 @@ runcmd:
     [Service]
     Type=simple
     Environment="EDGEVPNCONFIG=/etc/edgevpn/config.yaml"
-    ExecStart=/usr/local/bin/edgevpn --config /etc/edgevpn/config.yaml --api
+    ExecStart=/usr/local/bin/edgevpn --config /etc/edgevpn/config.yaml --dhcp --api
     Restart=always
     RestartSec=5
     
